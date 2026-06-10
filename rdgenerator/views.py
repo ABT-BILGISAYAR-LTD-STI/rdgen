@@ -17,6 +17,7 @@ from .forms import GenerateForm
 from .models import GithubRun
 from PIL import Image
 from urllib.parse import quote
+import psycopg2
 
 def generator_view(request):
     if request.method == 'POST':
@@ -528,15 +529,104 @@ def save_png(file, uuid, domain, name):
     return domain, uuid, name
 
 def save_custom_client(request):
-    file = request.FILES['file']
     myuuid = request.POST.get('uuid')
-    file_save_path = "exe/%s/%s" % (myuuid, file.name)
-    Path("exe/%s" % myuuid).mkdir(parents=True, exist_ok=True)
-    with open(file_save_path, "wb+") as f:
-        for chunk in file.chunks():
-            f.write(chunk)
+    filename = request.POST.get('filename')
+    github_release_url = request.POST.get('github_release_url')
+    client_version = request.POST.get('version', '1.0.0')
 
-    return HttpResponse("File saved successfully!")
+    # Fallback to direct file upload if provided
+    if 'file' in request.FILES:
+        try:
+            file = request.FILES['file']
+            file_save_path = f"exe/{myuuid}/{file.name}"
+            Path(f"exe/{myuuid}").mkdir(parents=True, exist_ok=True)
+            with open(file_save_path, "wb+") as f:
+                for chunk in file.chunks():
+                    f.write(chunk)
+            if not filename:
+                filename = file.name
+        except Exception as e:
+            pass
+
+    if not filename or not github_release_url:
+        if not request.FILES:
+            return HttpResponse("Missing filename or github_release_url", status=400)
+
+    # Update latest.json
+    downloads_dir = "downloads"
+    Path(downloads_dir).mkdir(parents=True, exist_ok=True)
+    latest_json_path = os.path.join(downloads_dir, "latest.json")
+    
+    latest_json = {}
+    if os.path.exists(latest_json_path):
+        try:
+            with open(latest_json_path, "r") as f:
+                latest_json = json.load(f)
+        except:
+            pass
+
+    if not latest_json or latest_json.get("tag_name") != client_version:
+        latest_json = {
+            "tag_name": client_version,
+            "name": client_version,
+            "body": "Yeni özel sürüm hazır.",
+            "assets": []
+        }
+
+    asset_found = False
+    if "assets" not in latest_json:
+        latest_json["assets"] = []
+        
+    for asset in latest_json["assets"]:
+        if asset["name"] == filename:
+            if github_release_url:
+                asset["browser_download_url"] = github_release_url
+            asset_found = True
+            break
+            
+    if not asset_found and github_release_url:
+        latest_json["assets"].append({
+            "name": filename,
+            "browser_download_url": github_release_url
+        })
+
+    try:
+        with open(latest_json_path, "w") as f:
+            json.dump(latest_json, f)
+    except Exception as e:
+        print(f"Could not save latest.json: {e}")
+
+    # rustdesk-api veritabanına bağlanıp arayüzdeki İndirme Portalı'nı (Vue.js) güncelle
+    try:
+        dbname = os.environ.get("POSTGRES_DB")
+        user = os.environ.get("POSTGRES_USER")
+        password = os.environ.get("POSTGRES_PASSWORD")
+        if dbname and user and password and github_release_url:
+            conn = psycopg2.connect(dbname=dbname, user=user, password=password, host="127.0.0.1", port="5432")
+            cur = conn.cursor()
+            
+            platform = "Windows"
+            lower_name = filename.lower()
+            if "linux" in lower_name: platform = "Linux"
+            elif "mac" in lower_name: platform = "macOS"
+            elif "android" in lower_name or ".apk" in lower_name: platform = "Android"
+
+            # File is on GitHub now, file size is variable, default to 0
+            file_size = 0
+
+            cur.execute("SELECT id FROM client_downloads WHERE platform = %s", (platform,))
+            if cur.fetchone():
+                cur.execute("UPDATE client_downloads SET file_name = %s, file_size = %s, url = %s WHERE platform = %s", (filename, file_size, github_release_url, platform))
+            else:
+                cur.execute("INSERT INTO client_downloads (platform, file_name, file_size, url) VALUES (%s, %s, %s, %s)", (platform, filename, file_size, github_release_url))
+            
+            conn.commit()
+            cur.close()
+            conn.close()
+    except Exception as e:
+        print(f"Error updating rustdesk-api DB: {e}")
+
+    return HttpResponse("File/URL saved successfully!")
 
 def cleanup_secrets(request):
     # Pass the UUID as a query param or in JSON body

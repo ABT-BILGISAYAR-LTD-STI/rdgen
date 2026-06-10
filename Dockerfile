@@ -1,18 +1,30 @@
 FROM python:3.13-alpine
 
 RUN adduser -D user
-USER user
 
 WORKDIR /opt/rdgen
 
-COPY . .
-RUN pip install --no-cache-dir -r requirements.txt \
+# Copy files with correct ownership before switching to non-root
+COPY --chown=user:user . .
+
+# WORKDIR is owned by root — user needs write access for db.sqlite3
+RUN chown user:user /opt/rdgen
+
+# Pre-create folders so named volumes inherit user:user ownership
+RUN mkdir -p /opt/rdgen/exe /opt/rdgen/png /opt/rdgen/temp_zips /opt/rdgen/downloads \
+ && chown -R user:user /opt/rdgen/exe /opt/rdgen/png /opt/rdgen/temp_zips /opt/rdgen/downloads
+
+USER user
+
+RUN pip install --no-cache-dir --user -r requirements.txt \
  && python manage.py migrate
 
 ENV PYTHONUNBUFFERED=1
+ENV PATH="/home/user/.local/bin:$PATH"
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD wget --spider 0.0.0.0:8000
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+  CMD wget --spider -q http://0.0.0.0:8000 || exit 1
 
-CMD ["/home/user/.local/bin/gunicorn", "-c", "gunicorn.conf.py", "rdgen.wsgi:application"]
+CMD ["gunicorn", "-c", "gunicorn.conf.py", "rdgen.wsgi:application"]

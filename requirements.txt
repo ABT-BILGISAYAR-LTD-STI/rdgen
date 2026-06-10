@@ -3,3 +3,4 @@ requests
 pillow
 gunicorn
 pyzipper
+psycopg2-binary

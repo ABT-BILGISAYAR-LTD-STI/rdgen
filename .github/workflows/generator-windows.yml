@@ -69,6 +69,8 @@ jobs:
     name: Build Windows
     needs: [build-RustDeskTempTopMostWindow, generate-bridge, setup]
     runs-on: ${{ matrix.job.os }}
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -604,27 +606,41 @@ jobs:
         run: |
           mv ./SignOutput/rustdesk.msi "./SignOutput/${{ env.filename }}.msi" || echo "rustdesk"
 
-      - name: send file to rdgen server
-        if: ${{ env.rdgen == 'true' }}
-        uses: nick-fields/retry@v3
-        with:
-          timeout_minutes: 1
-          max_attempts: 3
-          shell: bash
-          command: |
-            curl -i -X POST -H "Content-Type: multipart/form-data" -H "Authorization: Bearer ${{ env.token }}" -F "file=@./SignOutput/${{ env.filename }}.exe" -F "uuid=${{ env.uuid }}" ${{ secrets.GENURL }}/save_custom_client
-            curl -i -X POST -H "Content-Type: multipart/form-data" -H "Authorization: Bearer ${{ env.token }}" -F "file=@./SignOutput/${{ env.filename }}.msi" -F "uuid=${{ env.uuid }}" ${{ secrets.GENURL }}/save_custom_client || true
-
-      - name: send file to api server
-        if: ${{ env.rdgen == 'false' }}
-        uses: nick-fields/retry@v3
-        with:
-          timeout_minutes: 1
-          max_attempts: 3
-          shell: bash
-          command: |
-            curl -i -X POST -H "Content-Type: multipart/form-data" -H "Authorization: Bearer ${{ env.token }}" -F "file=@./SignOutput/${{ env.filename }}.exe" ${{ env.apiServer }}/api/save_custom_client
-            curl -i -X POST -H "Content-Type: multipart/form-data" -H "Authorization: Bearer ${{ env.token }}" -F "file=@./SignOutput/${{ env.filename }}.msi" ${{ env.apiServer }}/api/save_custom_client || true
+            - name: Create GitHub Release and Upload Artifacts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          # Use a sanitized tag name
+          TAG_NAME="v${{ env.VERSION }}-${{ env.uuid }}"
+          echo "Creating release $TAG_NAME"
+          
+          # Collect artifacts depending on the platform
+          # Windows has them in ./SignOutput/
+          # Android has them in ./flutter/build/app/outputs/flutter-apk/
+          # Just recursively find the files that match the filename
+          ARTIFACTS=""
+          if [ -d "./SignOutput" ]; then
+             ARTIFACTS=$(find ./SignOutput -name "${{ env.filename }}.*" -type f)
+          else
+             ARTIFACTS=$(find . -name "${{ env.filename }}.*" -type f -not -path "*/.git/*" | grep -v "temp_zips")
+          fi
+          
+          echo "Found artifacts: $ARTIFACTS"
+          gh release create "$TAG_NAME" $ARTIFACTS --title "${{ env.appname }} v${{ env.VERSION }}" --notes "Custom generated client" || echo "Failed to create release"
+          
+          # Notify backend. Assume .exe by default, or .apk for android, etc. We can just send the base github release URL 
+          # but the backend expects the exact download URL if it wants to use it directly.
+          # We'll just construct the URL for the first artifact found.
+          FIRST_ARTIFACT=$(echo "$ARTIFACTS" | head -n 1)
+          BASENAME=$(basename "$FIRST_ARTIFACT")
+          RELEASE_URL="https://github.com/${{ github.repository }}/releases/download/$TAG_NAME/$BASENAME"
+          
+          if [[ "${{ env.rdgen }}" == 'true' ]]; then
+             curl -i -X POST -H "Authorization: Bearer ${{ env.token }}" -d "github_release_url=$RELEASE_URL" -d "uuid=${{ env.uuid }}" -d "filename=$BASENAME" -d "version=${{ env.VERSION }}" ${{ secrets.GENURL }}/save_custom_client
+          else
+             curl -i -X POST -H "Authorization: Bearer ${{ env.token }}" -d "github_release_url=$RELEASE_URL" -d "filename=$BASENAME" -d "version=${{ env.VERSION }}" ${{ env.apiServer }}/api/save_custom_client
+          fi
 
   cleanup:
     needs: [build-for-windows-flutter]

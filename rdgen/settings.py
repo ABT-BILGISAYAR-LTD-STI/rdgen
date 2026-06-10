@@ -40,7 +40,9 @@ DEBUG = DEBUG_ENV.lower() in ['true', '1', 't']
 
 ALLOWED_HOSTS = ['*']
 #CSRF_TRUSTED_ORIGINS = os.getenv('CSRF_TRUSTED_ORIGINS', '').split()
-
+CSRF_TRUSTED_ORIGINS = [
+    f"{PROTOCOL}://{GENURL}" if GENURL else "https://localhost",
+]
 # Application definition
 
 INSTALLED_APPS = [
