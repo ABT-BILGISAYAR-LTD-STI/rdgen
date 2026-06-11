@@ -666,7 +666,7 @@ jobs:
             exit 1
           fi
 
-            - name: Create GitHub Release and Upload Artifacts
+      - name: Create GitHub Release and Upload Artifacts
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash

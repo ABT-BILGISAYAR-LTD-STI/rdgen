@@ -562,7 +562,7 @@ jobs:
           # override default build-tools version (29.0.3) -- optional
           BUILD_TOOLS_VERSION: "30.0.2"
 
-            - name: Create GitHub Release and Upload Artifacts
+      - name: Create GitHub Release and Upload Artifacts
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash

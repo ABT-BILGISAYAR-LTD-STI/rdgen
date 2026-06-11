@@ -602,7 +602,7 @@ jobs:
         run: |
           cp ./res/rustdesk-${{ env.VERSION }}-0-x86_64.pkg.tar.zst ./output/${{ env.filename }}-${{ matrix.job.arch }}.pkg.tar.zst
 
-            - name: Create GitHub Release and Upload Artifacts
+      - name: Create GitHub Release and Upload Artifacts
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
