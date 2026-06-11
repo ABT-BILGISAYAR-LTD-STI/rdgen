@@ -23,6 +23,7 @@ def generator_view(request):
     if request.method == 'POST':
         form = GenerateForm(request.POST, request.FILES)
         if form.is_valid():
+            try:
             user_secret = form.cleaned_data['sh_secret_field']
             if _settings.SH_SECRET == user_secret:
                 selfhosted = True
@@ -201,12 +202,14 @@ def generator_view(request):
                 decodedCustom['override-settings']['enable-terminal'] = 'Y' if enableTerminal else 'N'
 
             for line in defaultManual.splitlines():
-                k, value = line.split('=')
-                decodedCustom['default-settings'][k.strip()] = value.strip()
+                if '=' in line:
+                    k, value = line.split('=', 1)
+                    decodedCustom['default-settings'][k.strip()] = value.strip()
 
             for line in overrideManual.splitlines():
-                k, value = line.split('=')
-                decodedCustom['override-settings'][k.strip()] = value.strip()
+                if '=' in line:
+                    k, value = line.split('=', 1)
+                    decodedCustom['override-settings'][k.strip()] = value.strip()
             
             decodedCustomJson = json.dumps(decodedCustom)
 
@@ -334,6 +337,10 @@ def generator_view(request):
             except Exception as e:
                 #new_github_run.delete()
                 return JsonResponse({"error": f"Connection error: {str(e)}"}, status=500)
+            except Exception as outer_e:
+                import traceback
+                print(traceback.format_exc())
+                return HttpResponse(f"Internal Server Error: {str(outer_e)}<br><pre>{traceback.format_exc()}</pre>", status=500)
     else:
         form = GenerateForm()
     #return render(request, 'maintenance.html')
