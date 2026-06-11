@@ -266,7 +266,7 @@ def generator_view(request):
                 "privacylink_uuid":privacylink_uuid,
                 "privacylink_file":privacylink_file,
                 "appname":appname,
-                "genurl":_settings.GENURL,
+                "genurl":f"{_settings.PROTOCOL}://{_settings.GENURL}",
                 "urlLink":urlLink,
                 "downloadLink":downloadLink,
                 "delayFix": 'true' if delayFix else 'false',

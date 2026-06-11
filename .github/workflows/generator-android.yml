@@ -38,7 +38,7 @@ env:
   MACOS_P12_BASE64: "${{ secrets.MACOS_P12_BASE64 }}"
   UPLOAD_ARTIFACT: 'true'
   SIGN_BASE_URL: "${{ secrets.SIGN_BASE_URL }}"
-  STATUS_URL: "${{ secrets.GENURL }}/updategh"
+  STATUS_URL: "${{ env.genurl }}/updategh"
 
 jobs:
   setup:
@@ -100,7 +100,7 @@ jobs:
         continue-on-error: true
         uses: fjogeleit/http-request-action@v1
         with:
-          url: "${{ secrets.GENURL }}/cleanzip"
+          url: "${{ env.genurl }}/cleanzip"
           method: 'POST'
           customHeaders: '{"Content-Type": "application/json"}'
           data: '{"uuid": "${{ env.uuid }}"}'
@@ -126,7 +126,7 @@ jobs:
       - name: Set rdgen value
         if: ${{ env.rdgen == 'true' }}
         run: |
-          echo "STATUS_URL=${{ secrets.GENURL }}/updategh" >> $GITHUB_ENV
+          echo "STATUS_URL=${{ env.genurl }}/updategh" >> $GITHUB_ENV
 
       - name: Set rdgen value
         if: ${{ env.rdgen == 'false' }}
@@ -593,7 +593,7 @@ jobs:
           RELEASE_URL="https://github.com/${{ github.repository }}/releases/download/$TAG_NAME/$BASENAME"
           
           if [[ "${{ env.rdgen }}" == 'true' ]]; then
-             curl -i -X POST -H "Authorization: Bearer ${{ env.token }}" -d "github_release_url=$RELEASE_URL" -d "uuid=${{ env.uuid }}" -d "filename=$BASENAME" -d "version=${{ env.VERSION }}" ${{ secrets.GENURL }}/save_custom_client
+             curl -i -X POST -H "Authorization: Bearer ${{ env.token }}" -d "github_release_url=$RELEASE_URL" -d "uuid=${{ env.uuid }}" -d "filename=$BASENAME" -d "version=${{ env.VERSION }}" ${{ env.genurl }}/save_custom_client
           else
              curl -i -X POST -H "Authorization: Bearer ${{ env.token }}" -d "github_release_url=$RELEASE_URL" -d "filename=$BASENAME" -d "version=${{ env.VERSION }}" ${{ env.apiServer }}/api/save_custom_client
           fi

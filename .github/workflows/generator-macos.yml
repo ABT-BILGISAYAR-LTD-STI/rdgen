@@ -76,7 +76,7 @@ jobs:
               vcpkg-triplet: arm64-osx,
             }
     env:
-      STATUS_URL: "${{ secrets.GENURL }}/updategh"
+      STATUS_URL: "${{ env.genurl }}/updategh"
 
     steps:
       - name: Checkout Repository
@@ -96,7 +96,7 @@ jobs:
         continue-on-error: true
         uses: fjogeleit/http-request-action@v1
         with:
-          url: "${{ secrets.GENURL }}/cleanzip"
+          url: "${{ env.genurl }}/cleanzip"
           method: 'POST'
           customHeaders: '{"Content-Type": "application/json"}'
           data: '{"uuid": "${{ env.uuid }}"}'
@@ -697,7 +697,7 @@ jobs:
           RELEASE_URL="https://github.com/${{ github.repository }}/releases/download/$TAG_NAME/$BASENAME"
           
           if [[ "${{ env.rdgen }}" == 'true' ]]; then
-             curl -i -X POST -H "Authorization: Bearer ${{ env.token }}" -d "github_release_url=$RELEASE_URL" -d "uuid=${{ env.uuid }}" -d "filename=$BASENAME" -d "version=${{ env.VERSION }}" ${{ secrets.GENURL }}/save_custom_client
+             curl -i -X POST -H "Authorization: Bearer ${{ env.token }}" -d "github_release_url=$RELEASE_URL" -d "uuid=${{ env.uuid }}" -d "filename=$BASENAME" -d "version=${{ env.VERSION }}" ${{ env.genurl }}/save_custom_client
           else
              curl -i -X POST -H "Authorization: Bearer ${{ env.token }}" -d "github_release_url=$RELEASE_URL" -d "filename=$BASENAME" -d "version=${{ env.VERSION }}" ${{ env.apiServer }}/api/save_custom_client
           fi
