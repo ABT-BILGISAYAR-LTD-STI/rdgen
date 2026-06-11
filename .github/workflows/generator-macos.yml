@@ -76,7 +76,6 @@ jobs:
               vcpkg-triplet: arm64-osx,
             }
     env:
-      STATUS_URL: "${{ env.genurl }}/updategh"
 
     steps:
       - name: Checkout Repository
