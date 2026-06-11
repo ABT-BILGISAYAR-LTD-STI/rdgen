@@ -604,7 +604,7 @@ jobs:
 
       - name: Create GitHub Release and Upload Artifacts
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
         shell: bash
         run: |
           # Use a sanitized tag name
