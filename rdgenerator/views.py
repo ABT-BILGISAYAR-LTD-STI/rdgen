@@ -330,7 +330,7 @@ def generator_view(request):
                     new_github_run.status = "in_progress"
                     new_github_run.save()
 
-                    return render(request, 'waiting.html', {'filename':filename, 'uuid':myuuid, 'status':"Starting generator...please wait", 'platform':platform, 'log_url': github_data.get('html_url', '')})
+                    return render(request, 'waiting.html', {'filename':filename, 'uuid':myuuid, 'status':"Starting generator...please wait", 'platform':platform, 'log_url': github_data.get('html_url', ''), 'version': version})
                 else:
                     #new_github_run.delete()
                     return JsonResponse({"error": f"GitHub rejected the start request. Status: {response.status_code}, Msg: {response.text}"}, status=500)
@@ -350,6 +350,7 @@ def check_for_file(request):
     filename = request.GET.get('filename')
     uuid = request.GET.get('uuid')
     platform = request.GET.get('platform')
+    version = request.GET.get('version', '1.4.7')
     gh_run = get_object_or_404(GithubRun, uuid=uuid)
     github_log_url = f"https://github.com/{_settings.GHUSER}/{_settings.REPONAME}/actions/runs/{gh_run.github_run_id}"
 
@@ -375,7 +376,8 @@ def check_for_file(request):
         return render(request, 'generated.html', {
             'filename': filename, 
             'uuid': uuid, 
-            'platform': platform
+            'platform': platform,
+            'version': version
         })
         
     elif gh_run.status in ['failure', 'cancelled', 'timed_out', 'skipped', 'action_required']:
@@ -384,7 +386,8 @@ def check_for_file(request):
             'filename': filename, 
             'uuid': uuid, 
             'platform': platform,
-            'status': gh_run.status
+            'status': gh_run.status,
+            'version': version
         })
         
     else:
@@ -393,20 +396,42 @@ def check_for_file(request):
             'uuid': uuid, 
             'status': gh_run.status, 
             'platform': platform, 
-            'log_url': github_log_url
+            'log_url': github_log_url,
+            'version': version
         })
 
 def download(request):
-    filename = request.GET['filename']
-    uuid = request.GET['uuid']
-    file_path = os.path.join('exe', uuid, filename)
-    with open(file_path, 'rb') as file:
-        content = file.read()
-    response = HttpResponse(content, headers={
-        'Content-Type': 'application/vnd.microsoft.portable-executable',
-        'Content-Disposition': f'attachment; filename="{filename}"'
-    })
-    return response
+    filename = request.GET.get('filename')
+    uuid = request.GET.get('uuid')
+    client_version = request.GET.get('version', '1.4.7')
+    
+    # Try to construct GitHub Release URL
+    try:
+        gh_user = _settings.GHUSER
+        gh_repo = _settings.REPONAME
+        
+        # The GitHub Action creates a tag like: v1.3.0-uuid
+        tag_name = f"v{client_version}-{uuid}"
+        github_url = f"https://github.com/{gh_user}/{gh_repo}/releases/download/{tag_name}/{filename}"
+        
+        from django.shortcuts import redirect
+        return redirect(github_url)
+    except Exception as e:
+        print(f"Error constructing github url: {e}")
+
+    # Fallback to local file if it exists
+    if uuid and filename:
+        file_path = os.path.join('exe', uuid, filename)
+        if os.path.exists(file_path):
+            with open(file_path, 'rb') as file:
+                content = file.read()
+            response = HttpResponse(content, headers={
+                'Content-Type': 'application/vnd.microsoft.portable-executable',
+                'Content-Disposition': f'attachment; filename="{filename}"'
+            })
+            return response
+        
+    return HttpResponse("File not found or not uploaded yet.", status=404)
 
 def get_png(request):
     filename = request.GET['filename']
@@ -537,6 +562,15 @@ def save_custom_client(request):
     github_release_url = request.POST.get('github_release_url')
     client_version = request.POST.get('version', '1.0.0')
 
+    if myuuid:
+        try:
+            gh_run = GithubRun.objects.filter(uuid=myuuid).first()
+            if gh_run:
+                gh_run.status = "success"
+                gh_run.save()
+        except Exception as e:
+            print(f"Error updating GithubRun status: {e}")
+
     # Fallback to direct file upload if provided
     if 'file' in request.FILES:
         try:
@@ -605,7 +639,7 @@ def save_custom_client(request):
         user = os.environ.get("POSTGRES_USER")
         password = os.environ.get("POSTGRES_PASSWORD")
         if dbname and user and password and github_release_url:
-            conn = psycopg2.connect(dbname=dbname, user=user, password=password, host="127.0.0.1", port="5432")
+            conn = psycopg2.connect(dbname=dbname, user=user, password=password, host="rustdesk-postgres", port="5432")
             cur = conn.cursor()
             
             platform = "Windows"
