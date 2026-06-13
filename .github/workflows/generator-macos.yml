@@ -671,35 +671,99 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
         shell: bash
         run: |
-          # Use a sanitized tag name
+          set -euo pipefail
+
           TAG_NAME="v${{ env.VERSION }}-${{ env.uuid }}"
-          echo "Creating release $TAG_NAME"
+          echo "=== Release Configuration ==="
+          echo "TAG_NAME: $TAG_NAME"
+          echo "FILENAME: ${{ env.filename }}"
+          echo "UUID: ${{ env.uuid }}"
           
-          # Collect artifacts depending on the platform
-          # Windows has them in ./SignOutput/
-          # Android has them in ./flutter/build/app/outputs/flutter-apk/
-          # Just recursively find the files that match the filename
+          if [ -z "${{ env.filename }}" ]; then
+            echo "::error::env.filename is empty"
+            exit 1
+          fi
+          if [ -z "${{ env.uuid }}" ]; then
+            echo "::error::env.uuid is empty"
+            exit 1
+          fi
+
           ARTIFACTS=""
           if [ -d "./SignOutput" ]; then
-             ARTIFACTS=$(find ./SignOutput -name "${{ env.filename }}.*" -type f)
-          else
-             ARTIFACTS=$(find . -name "${{ env.filename }}.*" -type f -not -path "*/.git/*" | grep -v "temp_zips")
+             ARTIFACTS=$(find ./SignOutput -name "${{ env.filename }}.*" -type f 2>/dev/null || true)
+          fi
+          if [ -z "$ARTIFACTS" ]; then
+             ARTIFACTS=$(find . -name "${{ env.filename }}.*" -type f -not -path "*/.git/*" 2>/dev/null | grep -v "temp_zips" || true)
           fi
           
-          echo "Found artifacts: $ARTIFACTS"
-          gh release create "$TAG_NAME" $ARTIFACTS --title "${{ env.appname }} v${{ env.VERSION }}" --notes "Custom generated client" || echo "Failed to create release"
+          if [ -z "$ARTIFACTS" ]; then
+            echo "::error::No artifacts found matching '${{ env.filename }}.*'"
+            find . -name "*${{ env.filename }}*" -type f 2>/dev/null || echo "Nothing found"
+            exit 1
+          fi
           
-          # Notify backend. Assume .exe by default, or .apk for android, etc. We can just send the base github release URL 
-          # but the backend expects the exact download URL if it wants to use it directly.
-          # We'll just construct the URL for the first artifact found.
+          echo "=== Found artifacts ==="
+          echo "$ARTIFACTS"
+
+          RELEASE_CREATED=false
+          for attempt in 1 2 3; do
+            echo "Attempt $attempt: Creating release $TAG_NAME..."
+            if gh release create "$TAG_NAME" $ARTIFACTS \
+              --title "${{ env.appname }} v${{ env.VERSION }}" \
+              --notes "Custom generated client"; then
+              RELEASE_CREATED=true
+              echo "Release created successfully"
+              break
+            else
+              echo "Attempt $attempt failed"
+              [ "$attempt" -lt 3 ] && sleep 5
+            fi
+          done
+          
+          if [ "$RELEASE_CREATED" != "true" ]; then
+            echo "::error::Failed to create GitHub release after 3 attempts"
+            exit 1
+          fi
+          
           FIRST_ARTIFACT=$(echo "$ARTIFACTS" | head -n 1)
           BASENAME=$(basename "$FIRST_ARTIFACT")
           RELEASE_URL="https://github.com/${{ github.repository }}/releases/download/$TAG_NAME/$BASENAME"
+          echo "Release URL: $RELEASE_URL"
           
-          if [[ "${{ env.rdgen }}" == 'true' ]]; then
-             curl -i -X POST -H "Authorization: Bearer ${{ env.token }}" -d "github_release_url=$RELEASE_URL" -d "uuid=${{ env.uuid }}" -d "filename=$BASENAME" -d "version=${{ env.VERSION }}" ${{ env.genurl }}/save_custom_client
-          else
-             curl -i -X POST -H "Authorization: Bearer ${{ env.token }}" -d "github_release_url=$RELEASE_URL" -d "filename=$BASENAME" -d "version=${{ env.VERSION }}" ${{ env.apiServer }}/api/save_custom_client
+          AUTH_TOKEN="${{ env.token }}"
+          if [ -z "$AUTH_TOKEN" ]; then
+            AUTH_TOKEN="${{ secrets.GH_PAT }}"
+          fi
+          
+          CALLBACK_SUCCESS=false
+          for attempt in 1 2 3; do
+            if [[ "${{ env.rdgen }}" == 'true' ]]; then
+              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+                -H "Authorization: Bearer $AUTH_TOKEN" \
+                -d "github_release_url=$RELEASE_URL" \
+                -d "uuid=${{ env.uuid }}" \
+                -d "filename=$BASENAME" \
+                -d "version=${{ env.VERSION }}" \
+                "${{ env.genurl }}/save_custom_client" || echo "000")
+            else
+              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+                -H "Authorization: Bearer $AUTH_TOKEN" \
+                -d "github_release_url=$RELEASE_URL" \
+                -d "uuid=${{ env.uuid }}" \
+                -d "filename=$BASENAME" \
+                -d "version=${{ env.VERSION }}" \
+                "${{ env.apiServer }}/api/save_custom_client" || echo "000")
+            fi
+            
+            if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+              CALLBACK_SUCCESS=true
+              break
+            fi
+            [ "$attempt" -lt 3 ] && sleep 3
+          done
+          
+          if [ "$CALLBACK_SUCCESS" != "true" ]; then
+            echo "::warning::Backend callback failed, but release was created successfully"
           fi
 
   cleanup:
@@ -712,3 +776,4 @@ jobs:
         uses: geekyeggo/delete-artifact@v5
         with:
           name: encrypted-secrets-zip
+

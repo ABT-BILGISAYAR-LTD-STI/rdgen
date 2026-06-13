@@ -276,7 +276,8 @@ def generator_view(request):
                 "removeNewVersionNotif": 'true' if removeNewVersionNotif else 'false',
                 "compname": compname,
                 "androidappid":androidappid,
-                "filename":filename
+                "filename":filename,
+                "token":_settings.GHBEARER
             }
 
             temp_json_path = f"data_{uuid.uuid4()}.json"
@@ -325,12 +326,31 @@ def generator_view(request):
                 if response.status_code == 204 or response.status_code == 200:
                     github_data = response.json() if response.status_code == 200 else {}
                     print(github_data)
-                    # Use a default run ID if not provided in 204 response
-                    new_github_run.github_run_id = github_data.get('workflow_run_id', 0)
+                    # GitHub workflow_dispatch returns 204 with no body.
+                    # We need to find the actual run ID by polling the runs list.
+                    run_id = github_data.get('workflow_run_id', 0)
+                    log_url = github_data.get('html_url', '')
+                    if run_id == 0:
+                        import time
+                        time.sleep(3)  # Give GitHub a moment to register the run
+                        try:
+                            runs_url = f"https://api.github.com/repos/{_settings.GHUSER}/{_settings.REPONAME}/actions/runs?per_page=5&event=workflow_dispatch"
+                            runs_resp = requests.get(runs_url, headers=headers)
+                            if runs_resp.status_code == 200:
+                                runs_data = runs_resp.json()
+                                for run in runs_data.get('workflow_runs', []):
+                                    if run.get('status') in ('queued', 'in_progress', 'waiting'):
+                                        run_id = run['id']
+                                        log_url = run.get('html_url', '')
+                                        print(f"Found workflow run ID: {run_id}")
+                                        break
+                        except Exception as e:
+                            print(f"Could not find run ID: {e}")
+                    new_github_run.github_run_id = run_id
                     new_github_run.status = "in_progress"
                     new_github_run.save()
 
-                    return render(request, 'waiting.html', {'filename':filename, 'uuid':myuuid, 'status':"Starting generator...please wait", 'platform':platform, 'log_url': github_data.get('html_url', ''), 'version': version})
+                    return render(request, 'waiting.html', {'filename':filename, 'uuid':myuuid, 'status':"Starting generator...please wait", 'platform':platform, 'log_url': log_url, 'version': version})
                 else:
                     #new_github_run.delete()
                     return JsonResponse({"error": f"GitHub rejected the start request. Status: {response.status_code}, Msg: {response.text}"}, status=500)
@@ -405,6 +425,8 @@ def download(request):
     uuid = request.GET.get('uuid')
     client_version = request.GET.get('version', '1.4.7')
     
+    from django.shortcuts import redirect
+    
     # Try to construct GitHub Release URL
     try:
         gh_user = _settings.GHUSER
@@ -414,8 +436,36 @@ def download(request):
         tag_name = f"v{client_version}-{uuid}"
         github_url = f"https://github.com/{gh_user}/{gh_repo}/releases/download/{tag_name}/{filename}"
         
-        from django.shortcuts import redirect
-        return redirect(github_url)
+        # Verify the URL exists before redirecting (HEAD request)
+        try:
+            head_resp = requests.head(github_url, allow_redirects=True, timeout=10)
+            if head_resp.status_code == 200:
+                return redirect(github_url)
+        except Exception:
+            pass
+        
+        # Fallback: Query the GitHub Releases API to find the actual asset URL
+        try:
+            headers = {
+                "Authorization": f"Bearer {_settings.GHBEARER}",
+                "Accept": "application/vnd.github+json"
+            }
+            api_url = f"https://api.github.com/repos/{gh_user}/{gh_repo}/releases/tags/{tag_name}"
+            api_resp = requests.get(api_url, headers=headers, timeout=10)
+            if api_resp.status_code == 200:
+                release_data = api_resp.json()
+                for asset in release_data.get('assets', []):
+                    if asset.get('name') == filename:
+                        return redirect(asset['browser_download_url'])
+                # If exact filename not found, try partial match
+                for asset in release_data.get('assets', []):
+                    asset_name = asset.get('name', '')
+                    base_filename = filename.rsplit('.', 1)[0] if '.' in filename else filename
+                    if base_filename in asset_name:
+                        return redirect(asset['browser_download_url'])
+        except Exception as e:
+            print(f"Error querying GitHub API: {e}")
+        
     except Exception as e:
         print(f"Error constructing github url: {e}")
 
@@ -432,6 +482,7 @@ def download(request):
             return response
         
     return HttpResponse("File not found or not uploaded yet.", status=404)
+
 
 def get_png(request):
     filename = request.GET['filename']
