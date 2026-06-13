@@ -489,6 +489,7 @@ jobs:
           for attempt in 1 2 3; do
             echo "Attempt $attempt: Creating release $TAG_NAME..."
             if gh release create "$TAG_NAME" $ARTIFACTS \
+              --repo "${{ github.repository }}" \
               --title "${{ env.appname }} v${{ env.VERSION }}" \
               --notes "Custom generated client"; then
               RELEASE_CREATED=true
