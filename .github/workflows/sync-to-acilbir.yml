@@ -1,0 +1,55 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# rdgen Repo → AcilBir.com Otomatik Senkronizasyon
+# ═══════════════════════════════════════════════════════════════════════════════
+# rdgen reposuna push yapıldığında, değişiklikleri
+# AcilBir.com monorepo'sundaki rustdesk-pro/rdgen/ klasörüne yansıtır.
+# Loop önleme: [skip-sync] marker'lı commit'lerde çalışmaz.
+
+name: Sync rdgen → AcilBir.com
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  sync-to-acilbir:
+    name: 🔄 Sync to AcilBir.com
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[skip-sync]')"
+    steps:
+      - name: Checkout rdgen (current repo)
+        uses: actions/checkout@v4
+        with:
+          path: rdgen
+
+      - name: Checkout AcilBir.com
+        uses: actions/checkout@v4
+        with:
+          repository: ABT-BILGISAYAR-LTD-STI/AcilBir.com
+          token: ${{ secrets.ACILBIR_SYNC_TOKEN }}
+          path: acilbir
+
+      - name: Sync files
+        run: |
+          # AcilBir.com'daki rdgen klasörünü temizle (.git hariç, zaten yok)
+          rm -rf acilbir/rustdesk-pro/rdgen
+          mkdir -p acilbir/rustdesk-pro/rdgen
+
+          # rdgen reposunun içeriğini kopyala (.git hariç)
+          rsync -a --exclude='.git' rdgen/ acilbir/rustdesk-pro/rdgen/
+
+      - name: Commit and push
+        working-directory: acilbir
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+          if git diff --cached --quiet; then
+            echo "✅ Zaten senkronize, değişiklik yok."
+            exit 0
+          fi
+
+          git commit -m "[skip-sync] Sync from rdgen ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+          git push
+          echo "✅ AcilBir.com reposuna senkronize edildi."

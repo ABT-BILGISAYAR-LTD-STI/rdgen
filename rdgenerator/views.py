@@ -107,8 +107,8 @@ def generator_view(request):
                 if not iconfile:
                     iconfile = form.cleaned_data.get('iconbase64')
                 iconlink_url, iconlink_uuid, iconlink_file = save_png(iconfile,myuuid,full_url,"icon.png")
-            except:
-                print("failed to get icon, using default")
+            except Exception as e:
+                print(f"failed to get icon, using default: {e}")
                 iconlink_url = "false"
                 iconlink_uuid = "false"
                 iconlink_file = "false"
@@ -117,8 +117,8 @@ def generator_view(request):
                 if not logofile:
                     logofile = form.cleaned_data.get('logobase64')
                 logolink_url, logolink_uuid, logolink_file = save_png(logofile,myuuid,full_url,"logo.png")
-            except:
-                print("failed to get logo")
+            except Exception as e:
+                print(f"failed to get logo: {e}")
                 logolink_url = "false"
                 logolink_uuid = "false"
                 logolink_file = "false"
@@ -127,8 +127,8 @@ def generator_view(request):
                 if not privacyfile:
                     privacyfile = form.cleaned_data.get('privacybase64')
                 privacylink_url, privacylink_uuid, privacylink_file = save_png(privacyfile,myuuid,full_url,"privacy.png")
-            except:
-                print("failed to get logo")
+            except Exception as e:
+                print(f"failed to get privacy image: {e}")
                 privacylink_url = "false"
                 privacylink_uuid = "false"
                 privacylink_file = "false"
@@ -314,7 +314,7 @@ def generator_view(request):
                 'Accept':  'application/vnd.github+json',
                 'Content-Type': 'application/json',
                 'Authorization': 'Bearer '+_settings.GHBEARER,
-                'X-GitHub-Api-Version': '2026-03-10'
+                'X-GitHub-Api-Version': '2022-11-28'
             }
             new_github_run = GithubRun(
                 uuid=myuuid,
@@ -490,10 +490,9 @@ def download(request):
 
 
 def get_png(request):
-    filename = request.GET['filename']
-    uuid = request.GET['uuid']
-    #filename = filename+".exe"
-    file_path = os.path.join('png',uuid,filename)
+    filename = os.path.basename(request.GET['filename'])
+    uuid = os.path.basename(request.GET['uuid'])
+    file_path = os.path.join('png', uuid, filename)
     with open(file_path, 'rb') as file:
         response = HttpResponse(file, headers={
             'Content-Type': 'application/vnd.microsoft.portable-executable',
@@ -580,7 +579,7 @@ def startgh(request):
         'Accept':  'application/vnd.github+json',
         'Content-Type': 'application/json',
         'Authorization': 'Bearer '+_settings.GHBEARER,
-        'X-GitHub-Api-Version': '2026-03-10'
+        'X-GitHub-Api-Version': '2022-11-28'
     }
     response = requests.post(url, json=data, headers=headers)
     print(response)
@@ -651,6 +650,16 @@ def _detect_platform_from_filename(filename: str) -> str:
 
 
 def save_custom_client(request):
+    # Auth kontrolü: GitHub Actions workflow Bearer token gönderiyor
+    auth_header = request.META.get('HTTP_AUTHORIZATION', '')
+    if auth_header.startswith('Bearer '):
+        token = auth_header.split(' ', 1)[1]
+        if token != _settings.GHBEARER:
+            return HttpResponse("Unauthorized", status=401)
+    elif not request.FILES:
+        # Token yoksa ve dosya upload'ı da yoksa reddet
+        return HttpResponse("Unauthorized", status=401)
+
     myuuid = request.POST.get('uuid')
     filename = request.POST.get('filename')
     github_release_url = request.POST.get('github_release_url')
@@ -790,12 +799,11 @@ def cleanup_secrets(request):
     return HttpResponse("Cleanup successful", status=200)
 
 def get_zip(request):
-    filename = request.GET['filename']
-    #filename = filename+".exe"
-    file_path = os.path.join('temp_zips',filename)
+    filename = os.path.basename(request.GET['filename'])
+    file_path = os.path.join('temp_zips', filename)
     with open(file_path, 'rb') as file:
         response = HttpResponse(file, headers={
-            'Content-Type': 'application/vnd.microsoft.portable-executable',
+            'Content-Type': 'application/zip',
             'Content-Disposition': f'attachment; filename="{filename}"'
         })
 
