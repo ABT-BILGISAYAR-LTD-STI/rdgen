@@ -432,39 +432,44 @@ def download(request):
         gh_user = _settings.GHUSER
         gh_repo = _settings.REPONAME
         
-        # The GitHub Action creates a tag like: v1.3.0-uuid
-        tag_name = f"v{client_version}-{uuid}"
-        github_url = f"https://github.com/{gh_user}/{gh_repo}/releases/download/{tag_name}/{filename}"
+        # Yeni format: tüm platformlar tek release altında (v1.4.7)
+        # Eski format (fallback): UUID bazlı (v1.4.7-uuid)
+        tag_candidates = [f"v{client_version}"]
+        if uuid:
+            tag_candidates.append(f"v{client_version}-{uuid}")
         
-        # Verify the URL exists before redirecting (HEAD request)
-        try:
-            head_resp = requests.head(github_url, allow_redirects=True, timeout=10)
-            if head_resp.status_code == 200:
-                return redirect(github_url)
-        except Exception:
-            pass
-        
-        # Fallback: Query the GitHub Releases API to find the actual asset URL
-        try:
-            headers = {
-                "Authorization": f"Bearer {_settings.GHBEARER}",
-                "Accept": "application/vnd.github+json"
-            }
-            api_url = f"https://api.github.com/repos/{gh_user}/{gh_repo}/releases/tags/{tag_name}"
-            api_resp = requests.get(api_url, headers=headers, timeout=10)
-            if api_resp.status_code == 200:
-                release_data = api_resp.json()
-                for asset in release_data.get('assets', []):
-                    if asset.get('name') == filename:
-                        return redirect(asset['browser_download_url'])
-                # If exact filename not found, try partial match
-                for asset in release_data.get('assets', []):
-                    asset_name = asset.get('name', '')
-                    base_filename = filename.rsplit('.', 1)[0] if '.' in filename else filename
-                    if base_filename in asset_name:
-                        return redirect(asset['browser_download_url'])
-        except Exception as e:
-            print(f"Error querying GitHub API: {e}")
+        for tag_name in tag_candidates:
+            github_url = f"https://github.com/{gh_user}/{gh_repo}/releases/download/{tag_name}/{filename}"
+            
+            # Verify the URL exists before redirecting (HEAD request)
+            try:
+                head_resp = requests.head(github_url, allow_redirects=True, timeout=10)
+                if head_resp.status_code == 200:
+                    return redirect(github_url)
+            except Exception:
+                pass
+            
+            # Fallback: Query the GitHub Releases API to find the actual asset URL
+            try:
+                headers = {
+                    "Authorization": f"Bearer {_settings.GHBEARER}",
+                    "Accept": "application/vnd.github+json"
+                }
+                api_url = f"https://api.github.com/repos/{gh_user}/{gh_repo}/releases/tags/{tag_name}"
+                api_resp = requests.get(api_url, headers=headers, timeout=10)
+                if api_resp.status_code == 200:
+                    release_data = api_resp.json()
+                    for asset in release_data.get('assets', []):
+                        if asset.get('name') == filename:
+                            return redirect(asset['browser_download_url'])
+                    # If exact filename not found, try partial match
+                    for asset in release_data.get('assets', []):
+                        asset_name = asset.get('name', '')
+                        base_filename = filename.rsplit('.', 1)[0] if '.' in filename else filename
+                        if base_filename in asset_name:
+                            return redirect(asset['browser_download_url'])
+            except Exception as e:
+                print(f"Error querying GitHub API for tag {tag_name}: {e}")
         
     except Exception as e:
         print(f"Error constructing github url: {e}")
@@ -607,11 +612,51 @@ def save_png(file, uuid, domain, name):
     #return "%s/%s" % (domain, file_save_path)
     return domain, uuid, name
 
+def _detect_platform_from_filename(filename: str) -> str:
+    """Dosya adı ve uzantısından platform algılama (fallback mekanizması).
+
+    Öncelik sırası: dosya adında platform kelimesi > uzantı tabanlı algılama.
+    """
+    lower_name = filename.lower()
+
+    # Dosya adında açık platform ismi kontrolü
+    if "linux" in lower_name:
+        return "Linux"
+    if "mac" in lower_name or "darwin" in lower_name:
+        return "macOS"
+    if "android" in lower_name:
+        return "Android"
+
+    # Uzantı tabanlı algılama
+    extension_map = {
+        ".exe": "Windows",
+        ".msi": "Windows",
+        ".dmg": "macOS",
+        ".pkg": "macOS",
+        ".deb": "Linux",
+        ".rpm": "Linux",
+        ".appimage": "Linux",
+        ".flatpak": "Linux",
+        ".apk": "Android",
+        ".aab": "Android",
+    }
+    for ext, platform in extension_map.items():
+        if lower_name.endswith(ext):
+            return platform
+    # .pkg.tar.zst (Arch Linux) gibi çoklu uzantılar
+    if ".pkg.tar" in lower_name:
+        return "Linux"
+
+    return "Windows"  # Varsayılan
+
+
 def save_custom_client(request):
     myuuid = request.POST.get('uuid')
     filename = request.POST.get('filename')
     github_release_url = request.POST.get('github_release_url')
     client_version = request.POST.get('version', '1.0.0')
+    # Workflow'dan gelen açık platform bilgisi (güvenilir kaynak)
+    platform_param = request.POST.get('platform')
 
     if myuuid:
         try:
@@ -640,6 +685,12 @@ def save_custom_client(request):
         if not request.FILES:
             return HttpResponse("Missing filename or github_release_url", status=400)
 
+    # Platform belirleme: workflow'dan gelen > dosya adından algılama
+    if platform_param:
+        platform = platform_param
+    else:
+        platform = _detect_platform_from_filename(filename)
+
     # Update latest.json
     downloads_dir = "downloads"
     Path(downloads_dir).mkdir(parents=True, exist_ok=True)
@@ -650,7 +701,7 @@ def save_custom_client(request):
         try:
             with open(latest_json_path, "r") as f:
                 latest_json = json.load(f)
-        except:
+        except Exception:
             pass
 
     if not latest_json or latest_json.get("tag_name") != client_version:
@@ -692,21 +743,20 @@ def save_custom_client(request):
         if dbname and user and password and github_release_url:
             conn = psycopg2.connect(dbname=dbname, user=user, password=password, host="rustdesk-postgres", port="5432")
             cur = conn.cursor()
-            
-            platform = "Windows"
-            lower_name = filename.lower()
-            if "linux" in lower_name: platform = "Linux"
-            elif "mac" in lower_name: platform = "macOS"
-            elif "android" in lower_name or ".apk" in lower_name: platform = "Android"
 
-            # File is on GitHub now, file size is variable, default to 0
             file_size = 0
 
             cur.execute("SELECT id FROM client_downloads WHERE platform = %s", (platform,))
             if cur.fetchone():
-                cur.execute("UPDATE client_downloads SET file_name = %s, file_size = %s, url = %s WHERE platform = %s", (filename, file_size, github_release_url, platform))
+                cur.execute(
+                    "UPDATE client_downloads SET file_name = %s, file_size = %s, url = %s, version = %s WHERE platform = %s",
+                    (filename, file_size, github_release_url, client_version, platform),
+                )
             else:
-                cur.execute("INSERT INTO client_downloads (platform, file_name, file_size, url) VALUES (%s, %s, %s, %s)", (platform, filename, file_size, github_release_url))
+                cur.execute(
+                    "INSERT INTO client_downloads (platform, file_name, file_size, url, version) VALUES (%s, %s, %s, %s, %s)",
+                    (platform, filename, file_size, github_release_url, client_version),
+                )
             
             conn.commit()
             cur.close()
