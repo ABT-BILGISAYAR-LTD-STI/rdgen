@@ -419,8 +419,10 @@ jobs:
 
           # Add reqwest blocking feature to Cargo.toml if not already present
           if grep -q 'reqwest' ./Cargo.toml; then
-            # reqwest already exists, ensure blocking feature is enabled
-            sed -i 's/reqwest = {\(.*\)}/reqwest = {\1, features = ["blocking"]}/' ./Cargo.toml 2>/dev/null || true
+            if ! grep 'reqwest' ./Cargo.toml | grep -q '"blocking"'; then
+              # "blocking" not in reqwest features, add it to the reqwest features array
+              sed -i '/^reqwest/s/features = \["/features = ["blocking", "/' ./Cargo.toml 2>/dev/null || true
+            fi
           fi
 
       - name: allow custom.txt
