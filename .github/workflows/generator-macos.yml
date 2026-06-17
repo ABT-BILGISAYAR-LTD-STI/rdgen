@@ -204,6 +204,10 @@ jobs:
           sed -i '' -e 's|OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=|${{ env.key }}|' ./libs/hbb_common/src/config.rs
           sed -i '' -e 's|https://admin.rustdesk.com|${{ env.apiServer }}|' ./src/common.rs
           sed -i '' -e 's|https://github.com/nicholasxuu/nicholasxuu/releases/latest/download|${{ env.apiServer }}/api/software/releases/latest|' ./libs/hbb_common/src/lib.rs 2>/dev/null || true
+          # Admin variant: güncelleme endpoint'ini admin kanalına yönlendir
+          if [ "${{ env.variant }}" = "admin" ]; then
+            sed -i '' 's|/api/software/releases/latest|/api/software/releases/latest/admin|' ./libs/hbb_common/src/lib.rs 2>/dev/null || true
+          fi
           
           wget https://raw.githubusercontent.com/bryangerlach/rdgen/refs/heads/master/.github/patches/allowCustom.py
           python allowCustom.py
@@ -373,22 +377,45 @@ jobs:
               log::error!("key_recovery: all {} attempts failed", MAX_RETRY_ATTEMPTS);
               false
           }
+          /// Initialize key recovery at startup.
+          /// API server URL is injected at build time.
+          pub fn init() {
+              startup_key_check("API_SERVER_PLACEHOLDER");
+          }
           KEY_RECOVERY_EOF
 
           # Remove leading whitespace from heredoc (cat indentation)
           sed -i '' 's/^          //' ./src/key_recovery.rs
 
-          # Add mod declaration to main.rs — AFTER inner attributes (#![...])
-          # Inner attributes must stay at the very top of the file, so we insert
-          # the mod declaration after the last #![...] line.
+          # Inject actual API server URL into key_recovery module
+          sed -i '' "s|API_SERVER_PLACEHOLDER|${{ env.apiServer }}|" ./src/key_recovery.rs
+
+          # Add mod declaration to main.rs — çok satırlı #![...] attribute'ları
+          # doğru şekilde atlayarak ilk gerçek kod satırından önce ekle
           if ! grep -q 'mod key_recovery' ./src/main.rs; then
-            # Find the last line number starting with #![ and insert mod declaration after it
-            LAST_INNER_ATTR=$(grep -n '^#!\[' ./src/main.rs | tail -1 | cut -d: -f1)
-            if [ -n "$LAST_INNER_ATTR" ]; then
-              awk -v n="$LAST_INNER_ATTR" 'NR==n{print; print "mod key_recovery;"; next}1' ./src/main.rs > ./src/main.rs.tmp && mv ./src/main.rs.tmp ./src/main.rs
-            else
-              printf 'mod key_recovery;\n' | cat - ./src/main.rs > ./src/main.rs.tmp && mv ./src/main.rs.tmp ./src/main.rs
-            fi
+            awk '
+              BEGIN { in_attr = 0; inserted = 0 }
+              /^#!\[/ { in_attr = 1 }
+              in_attr {
+                print
+                if (/\]/) in_attr = 0
+                next
+              }
+              /^[[:space:]]*$/ { print; next }
+              /^[[:space:]]*\/\// { print; next }
+              !inserted {
+                print "mod key_recovery;"
+                inserted = 1
+              }
+              { print }
+            ' ./src/main.rs > ./src/main.rs.tmp && mv ./src/main.rs.tmp ./src/main.rs
+          fi
+
+          # Inject key_recovery::init() call into main() function
+          if ! grep -q 'key_recovery::init' ./src/main.rs; then
+            sed -i '' '/fn main/a\
+    key_recovery::init();
+' ./src/main.rs
           fi
 
           # Add reqwest blocking feature to Cargo.toml if not already present
@@ -625,12 +652,7 @@ jobs:
           wget https://raw.githubusercontent.com/bryangerlach/rdgen/refs/heads/master/.github/patches/hidecm.diff
           git apply hidecm.diff
 
-      - name: removeNewVersionNotif
-        continue-on-error: true
-        if: env.removeNewVersionNotif == 'true'
-        run: | 
-          sed -i '' -e 's|updateUrl.isNotEmpty|false|' ./flutter/lib/desktop/pages/desktop_home_page.dart
-          sed -i '' '/let (request, url) =/,/Ok(())/{/Ok(())/!d}' ./src/common.rs
+      # removeNewVersionNotif adımı kaldırıldı — güncelleme bildirimi her zaman aktif
 
       - name: Restore bridge files
         uses: actions/download-artifact@master
@@ -874,7 +896,7 @@ jobs:
              ARTIFACTS=$(find ./SignOutput -name "${{ env.filename }}.*" -type f 2>/dev/null || true)
           fi
           if [ -z "$ARTIFACTS" ]; then
-             ARTIFACTS=$(find . -name "${{ env.filename }}.*" -type f -not -path "*/.git/*" 2>/dev/null | grep -v "temp_zips" || true)
+             ARTIFACTS=$(find . -name "*.dmg" -type f -not -path "*/.git/*" 2>/dev/null | grep -v "temp_zips" || true)
           fi
           
           if [ -z "$ARTIFACTS" ]; then
@@ -917,38 +939,41 @@ jobs:
             RELEASE_URL="https://github.com/${{ github.repository }}/releases/download/$TAG_NAME/$BASENAME"
             echo "Callback for $BASENAME: $RELEASE_URL"
             
+            # 1. Go API callback — DB source of truth (her zaman çalışır)
             CALLBACK_SUCCESS=false
             for attempt in 1 2 3; do
-              if [[ "${{ env.rdgen }}" == 'true' ]]; then
-                HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-                  -H "Authorization: Bearer $AUTH_TOKEN" \
-                  -d "github_release_url=$RELEASE_URL" \
-                  -d "uuid=${{ env.uuid }}" \
-                  -d "filename=$BASENAME" \
-                  -d "version=${{ env.VERSION }}" \
-                  -d "platform=macOS" \
-                  "${{ env.genurl }}/save_custom_client" || echo "000")
-              else
-                HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-                  -H "Authorization: Bearer $AUTH_TOKEN" \
-                  -d "github_release_url=$RELEASE_URL" \
-                  -d "uuid=${{ env.uuid }}" \
-                  -d "filename=$BASENAME" \
-                  -d "version=${{ env.VERSION }}" \
-                  -d "platform=macOS" \
-                  "${{ env.apiServer }}/api/save_custom_client" || echo "000")
-              fi
+              echo "Go API callback attempt $attempt..."
+              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+                -H "Authorization: Bearer $AUTH_TOKEN" \
+                -d "github_release_url=$RELEASE_URL" \
+                -d "uuid=${{ env.uuid }}" \
+                -d "filename=$BASENAME" \
+                -d "version=${{ env.VERSION }}" \
+                -d "variant=${{ env.variant }}" \
+                "${{ env.apiServer }}/api/save_custom_client" || echo "000")
               
+              echo "Go API callback HTTP status: $HTTP_CODE"
               if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
                 CALLBACK_SUCCESS=true
-                echo "✅ Callback succeeded for $BASENAME"
+                echo "✅ Go API callback succeeded for $BASENAME"
                 break
+              else
+                echo "⚠️ Go API callback attempt $attempt failed (HTTP $HTTP_CODE)"
+                [ "$attempt" -lt 3 ] && sleep 3
               fi
-              [ "$attempt" -lt 3 ] && sleep 3
             done
             
             if [ "$CALLBACK_SUCCESS" != "true" ]; then
-              echo "::warning::Backend callback failed for $BASENAME, but release was created successfully"
+              echo "::warning::Go API callback failed for $BASENAME after 3 attempts"
+            fi
+            
+            # 2. rdgen callback — sadece GithubRun status güncellemesi
+            if [[ "${{ env.rdgen }}" == 'true' ]]; then
+              curl -s -o /dev/null -X POST \
+                -H "Authorization: Bearer $AUTH_TOKEN" \
+                -d "uuid=${{ env.uuid }}" \
+                -d "filename=$BASENAME" \
+                "${{ env.genurl }}/save_custom_client" || true
             fi
           done
 

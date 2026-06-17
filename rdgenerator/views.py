@@ -17,7 +17,6 @@ from .forms import GenerateForm
 from .models import GithubRun
 from PIL import Image
 from urllib.parse import quote
-import psycopg2
 
 def generator_view(request):
     if request.method == 'POST':
@@ -30,6 +29,10 @@ def generator_view(request):
                 selfhosted = False
             platform = form.cleaned_data['platform']
             version = form.cleaned_data['version']
+            variant = form.cleaned_data.get('variant', 'client')
+            # Admin build ise version'a suffix ekle → release tag v1.4.7-admin olur
+            if variant == 'admin' and version != 'master':
+                version = version + '-admin'
             delayFix = form.cleaned_data['delayFix']
             cycleMonitor = form.cleaned_data['cycleMonitor']
             xOffline = form.cleaned_data['xOffline']
@@ -107,8 +110,8 @@ def generator_view(request):
                 if not iconfile:
                     iconfile = form.cleaned_data.get('iconbase64')
                 iconlink_url, iconlink_uuid, iconlink_file = save_png(iconfile,myuuid,full_url,"icon.png")
-            except:
-                print("failed to get icon, using default")
+            except Exception as e:
+                print(f"failed to get icon, using default: {e}")
                 iconlink_url = "false"
                 iconlink_uuid = "false"
                 iconlink_file = "false"
@@ -117,8 +120,8 @@ def generator_view(request):
                 if not logofile:
                     logofile = form.cleaned_data.get('logobase64')
                 logolink_url, logolink_uuid, logolink_file = save_png(logofile,myuuid,full_url,"logo.png")
-            except:
-                print("failed to get logo")
+            except Exception as e:
+                print(f"failed to get logo: {e}")
                 logolink_url = "false"
                 logolink_uuid = "false"
                 logolink_file = "false"
@@ -127,8 +130,8 @@ def generator_view(request):
                 if not privacyfile:
                     privacyfile = form.cleaned_data.get('privacybase64')
                 privacylink_url, privacylink_uuid, privacylink_file = save_png(privacyfile,myuuid,full_url,"privacy.png")
-            except:
-                print("failed to get logo")
+            except Exception as e:
+                print(f"failed to get privacy image: {e}")
                 privacylink_url = "false"
                 privacylink_uuid = "false"
                 privacylink_file = "false"
@@ -277,7 +280,8 @@ def generator_view(request):
                 "compname": compname,
                 "androidappid":androidappid,
                 "filename":filename,
-                "token":_settings.GHBEARER
+                "token":_settings.GHBEARER,
+                "variant": variant if variant else 'client'
             }
 
             temp_json_path = f"data_{uuid.uuid4()}.json"
@@ -314,7 +318,7 @@ def generator_view(request):
                 'Accept':  'application/vnd.github+json',
                 'Content-Type': 'application/json',
                 'Authorization': 'Bearer '+_settings.GHBEARER,
-                'X-GitHub-Api-Version': '2026-03-10'
+                'X-GitHub-Api-Version': '2022-11-28'
             }
             new_github_run = GithubRun(
                 uuid=myuuid,
@@ -490,10 +494,9 @@ def download(request):
 
 
 def get_png(request):
-    filename = request.GET['filename']
-    uuid = request.GET['uuid']
-    #filename = filename+".exe"
-    file_path = os.path.join('png',uuid,filename)
+    filename = os.path.basename(request.GET['filename'])
+    uuid = os.path.basename(request.GET['uuid'])
+    file_path = os.path.join('png', uuid, filename)
     with open(file_path, 'rb') as file:
         response = HttpResponse(file, headers={
             'Content-Type': 'application/vnd.microsoft.portable-executable',
@@ -580,7 +583,7 @@ def startgh(request):
         'Accept':  'application/vnd.github+json',
         'Content-Type': 'application/json',
         'Authorization': 'Bearer '+_settings.GHBEARER,
-        'X-GitHub-Api-Version': '2026-03-10'
+        'X-GitHub-Api-Version': '2022-11-28'
     }
     response = requests.post(url, json=data, headers=headers)
     print(response)
@@ -612,52 +615,30 @@ def save_png(file, uuid, domain, name):
     #return "%s/%s" % (domain, file_save_path)
     return domain, uuid, name
 
-def _detect_platform_from_filename(filename: str) -> str:
-    """Dosya adı ve uzantısından platform algılama (fallback mekanizması).
-
-    Öncelik sırası: dosya adında platform kelimesi > uzantı tabanlı algılama.
-    """
-    lower_name = filename.lower()
-
-    # Dosya adında açık platform ismi kontrolü
-    if "linux" in lower_name:
-        return "Linux"
-    if "mac" in lower_name or "darwin" in lower_name:
-        return "macOS"
-    if "android" in lower_name:
-        return "Android"
-
-    # Uzantı tabanlı algılama
-    extension_map = {
-        ".exe": "Windows",
-        ".msi": "Windows",
-        ".dmg": "macOS",
-        ".pkg": "macOS",
-        ".deb": "Linux",
-        ".rpm": "Linux",
-        ".appimage": "Linux",
-        ".flatpak": "Linux",
-        ".apk": "Android",
-        ".aab": "Android",
-    }
-    for ext, platform in extension_map.items():
-        if lower_name.endswith(ext):
-            return platform
-    # .pkg.tar.zst (Arch Linux) gibi çoklu uzantılar
-    if ".pkg.tar" in lower_name:
-        return "Linux"
-
-    return "Windows"  # Varsayılan
-
-
 def save_custom_client(request):
+    """GitHub Actions workflow callback'i.
+
+    Bu endpoint sadece iki iş yapar:
+    1. GithubRun status'unu "success" olarak günceller (build tracking UI için)
+    2. Dosya upload fallback'i (opsiyonel)
+
+    client_downloads tablosuna yazma işi Go API tarafından yapılır
+    (hem callback hem de cron sync ile).
+    """
+    # Auth kontrolü: GitHub Actions workflow Bearer token gönderiyor
+    auth_header = request.META.get('HTTP_AUTHORIZATION', '')
+    if auth_header.startswith('Bearer '):
+        token = auth_header.split(' ', 1)[1]
+        if token != _settings.GHBEARER:
+            return HttpResponse("Unauthorized", status=401)
+    elif not request.FILES:
+        # Token yoksa ve dosya upload'ı da yoksa reddet
+        return HttpResponse("Unauthorized", status=401)
+
     myuuid = request.POST.get('uuid')
     filename = request.POST.get('filename')
-    github_release_url = request.POST.get('github_release_url')
-    client_version = request.POST.get('version', '1.0.0')
-    # Workflow'dan gelen açık platform bilgisi (güvenilir kaynak)
-    platform_param = request.POST.get('platform')
 
+    # GithubRun status güncelleme — build tracking UI'ın çalışması için gerekli
     if myuuid:
         try:
             gh_run = GithubRun.objects.filter(uuid=myuuid).first()
@@ -679,92 +660,9 @@ def save_custom_client(request):
             if not filename:
                 filename = file.name
         except Exception as e:
-            pass
+            print(f"Error saving uploaded file: {e}")
 
-    if not filename or not github_release_url:
-        if not request.FILES:
-            return HttpResponse("Missing filename or github_release_url", status=400)
-
-    # Platform belirleme: workflow'dan gelen > dosya adından algılama
-    if platform_param:
-        platform = platform_param
-    else:
-        platform = _detect_platform_from_filename(filename)
-
-    # Update latest.json
-    downloads_dir = "downloads"
-    Path(downloads_dir).mkdir(parents=True, exist_ok=True)
-    latest_json_path = os.path.join(downloads_dir, "latest.json")
-    
-    latest_json = {}
-    if os.path.exists(latest_json_path):
-        try:
-            with open(latest_json_path, "r") as f:
-                latest_json = json.load(f)
-        except Exception:
-            pass
-
-    if not latest_json or latest_json.get("tag_name") != client_version:
-        latest_json = {
-            "tag_name": client_version,
-            "name": client_version,
-            "body": "Yeni özel sürüm hazır.",
-            "assets": []
-        }
-
-    asset_found = False
-    if "assets" not in latest_json:
-        latest_json["assets"] = []
-        
-    for asset in latest_json["assets"]:
-        if asset["name"] == filename:
-            if github_release_url:
-                asset["browser_download_url"] = github_release_url
-            asset_found = True
-            break
-            
-    if not asset_found and github_release_url:
-        latest_json["assets"].append({
-            "name": filename,
-            "browser_download_url": github_release_url
-        })
-
-    try:
-        with open(latest_json_path, "w") as f:
-            json.dump(latest_json, f)
-    except Exception as e:
-        print(f"Could not save latest.json: {e}")
-
-    # rustdesk-api veritabanına bağlanıp arayüzdeki İndirme Portalı'nı (Vue.js) güncelle
-    try:
-        dbname = os.environ.get("POSTGRES_DB")
-        user = os.environ.get("POSTGRES_USER")
-        password = os.environ.get("POSTGRES_PASSWORD")
-        if dbname and user and password and github_release_url:
-            conn = psycopg2.connect(dbname=dbname, user=user, password=password, host="rustdesk-postgres", port="5432")
-            cur = conn.cursor()
-
-            file_size = 0
-
-            cur.execute("SELECT id FROM client_downloads WHERE platform = %s", (platform,))
-            if cur.fetchone():
-                cur.execute(
-                    "UPDATE client_downloads SET file_name = %s, file_size = %s, url = %s, version = %s WHERE platform = %s",
-                    (filename, file_size, github_release_url, client_version, platform),
-                )
-            else:
-                cur.execute(
-                    "INSERT INTO client_downloads (platform, file_name, file_size, url, version) VALUES (%s, %s, %s, %s, %s)",
-                    (platform, filename, file_size, github_release_url, client_version),
-                )
-            
-            conn.commit()
-            cur.close()
-            conn.close()
-    except Exception as e:
-        print(f"Error updating rustdesk-api DB: {e}")
-
-    return HttpResponse("File/URL saved successfully!")
+    return HttpResponse("OK")
 
 def cleanup_secrets(request):
     # Pass the UUID as a query param or in JSON body
@@ -790,12 +688,11 @@ def cleanup_secrets(request):
     return HttpResponse("Cleanup successful", status=200)
 
 def get_zip(request):
-    filename = request.GET['filename']
-    #filename = filename+".exe"
-    file_path = os.path.join('temp_zips',filename)
+    filename = os.path.basename(request.GET['filename'])
+    file_path = os.path.join('temp_zips', filename)
     with open(file_path, 'rb') as file:
         response = HttpResponse(file, headers={
-            'Content-Type': 'application/vnd.microsoft.portable-executable',
+            'Content-Type': 'application/zip',
             'Content-Disposition': f'attachment; filename="{filename}"'
         })
 
